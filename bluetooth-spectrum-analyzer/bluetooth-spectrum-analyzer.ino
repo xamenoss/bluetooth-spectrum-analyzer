@@ -68,7 +68,7 @@ https://github.com/hpwit/I2SClocklessLedDriver                // I use a heavily
 https://github.com/yliniemi/I2SClocklessLedDriver/tree/dev    // This is my current heavily modified version. Perhaps the changes end up in the hpwit's version some day
 https://github.com/fakufaku/esp32-fft                         // This is the fastest FFT library I could find. Analyzing 4096 samples takes 5 milliseconds.
 https://github.com/pschatzmann/ESP32-A2DP
-https://github.com/BerranRemzi/dual-function-button           // short press and long press in one button
+https://github.com/BerranRemzi/dual-function-button           // short press and long press in one button (with Debounce)
 */
 
 #include "BluetoothA2DPSink.h"
