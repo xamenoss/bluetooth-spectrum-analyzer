@@ -1,3 +1,5 @@
+
+
  
 
 /*
@@ -22,20 +24,20 @@ DONE Get samples based on the time the last loop took + 1 %
 
 Suggestions from Facebook
 
-Kehitysehdotus muusikon näkökulmasta. Semmoinen ominaisuus voisi olla hyödyllinen, että olisi mahdollista valita taajuusalue esim. neljästä eri presetistä.
-1 koko alue, 2 bassot, 3 keskitaajuudet, 4 ylätaajuudet, tai vielä parempi, jos alue olisi itse määriteltävissä.
-Näin pystyisi tarkkailemaan tiettyä aluetta keskitetysti ja tarkemmalla resoluutiolla.
+Development proposal from a musician's point of view. Such a feature could be useful, that it would be possible to choose a frequency range from e.g. four different presets.
+1 the whole range, 2 the bass, 3 the middle frequencies, 4 the upper frequencies, or even better if the range was self-definable.
+In this way, it would be possible to observe a certain area centrally and with a more precise resolution.
 
-Tuo on hyvä ja toteutettavissa oleva ehdotus. Aluksi mietin mielivaltaista aluetta, mutta sinne pitäis laskea tosi paljon.
-Jos niitä alueita on vain neljä, niin ne voi hardkoodata flash romiin. Ram säästyy ja mikrokontrollerin ei tartte laskea kymmenen sekuntia.
+That is a good and feasible proposal. At first, I was thinking about an arbitrary area, but it would have to count a lot.
+If there are only four of those areas, you can hardcode them into the flash rom. Ram is saved and the microcontroller does not have to count for ten seconds.
 
-Joo, tuon suuntainen se tyypillinen värien käyttö näissä hetkellissä huipussa mitkä jää vähäksi aikaa päälle taitaa olla.
-Punainen jos menee +-0dB yli, oranssi "kriittisen lähellä 0dB", ja jotain muuta sitten muuten.
-Mut tässähän nollataso taitaa olla tuolla ylälaidassa, siis laitteen sisäisenä, ja riippuisi sitten sovelluskohteesta ja toteutuksesta mihin kohtaa se suhteellinen 0dB asettuisi.
-Silloin tän laitteen dynamiikasta osa käytettäisiin tuon ylimääräisen headroomin mittaamiseen, vai kuinka Antti Yliniemi?
+Yes, the typical use of colors in these momentary peaks, which remain on for a while, seems to be in that direction.
+Red if it goes over +-0dB, orange "critically close to 0dB", and something else otherwise.
+But here the zero level seems to be at the top, i.e. inside the device, and then it would depend on the application and the implementation where the relative 0dB would be.
+Then part of the dynamics of this device would be used to measure that extra headroom, right Antti Yliniemi?
   
-Teen myös DC:n poistamisen väärin. Tällä hetkellä miinustan signaalista sen keskiarvon.
-Siitä voi aiheutua että kaksi ekaa palkkia nousee kummittelemaan. Tämä DC:n poisto pitää suunnitella järkevästi ettei se käytä liikaa muistia.
+I'm also doing the DC removal wrong. At the moment, I'm subtracting its average from the signal.
+This can cause the first two beams to rise to haunt. This removal of DC must be planned sensibly so that it does not use too much memory.
 https://ccrma.stanford.edu/~jos/fp/DC_Blocker_Software_Implementations.html
 
 I can copy some funtionality from this product
@@ -66,6 +68,7 @@ https://github.com/hpwit/I2SClocklessLedDriver                // I use a heavily
 https://github.com/yliniemi/I2SClocklessLedDriver/tree/dev    // This is my current heavily modified version. Perhaps the changes end up in the hpwit's version some day
 https://github.com/fakufaku/esp32-fft                         // This is the fastest FFT library I could find. Analyzing 4096 samples takes 5 milliseconds.
 https://github.com/pschatzmann/ESP32-A2DP
+https://github.com/BerranRemzi/dual-function-button           // short press and long press in one button
 */
 
 #include "BluetoothA2DPSink.h"
@@ -102,9 +105,11 @@ struct FloatOffset
 
 #include "constants.h"
 
-// #define STRESS_RAM
+ //#define STRESS_RAM
+ 
+#include "DualFunctionButton.h"
 
-// #define BISCUIT
+#define BISCUIT
 
 enum MapMode
 {
@@ -129,6 +134,7 @@ MapMode mapMode = RAINBOW;
 #define ADD_TO_DELTA 0.5
 
 #ifdef BISCUIT
+#define LED1 2  // Internal LED
 #define SIGNAL_STARTS_FROM_THE_BOTTOM
 #define PANEL_WIDTH 16
 #define PANEL_HEIGHT 24
@@ -147,7 +153,6 @@ MapMode mapMode = RAINBOW;
 #define SAMPLES 4096
 // #define WAIT_UNTIL_DRAWING_DONE
 #define SECONDS_BETWEEN_DEBUG 60
-
 // #define USE_DOUBLE_BUFFERING
 #define BANDS SCREEN_WIDTH
 const float dynamicRange = 5.0;    // in bels, not decibels. bel is ten decibels. it's metric. bel is the base unit. long live the metric.
@@ -158,7 +163,7 @@ const float dynamicRange = 5.0;    // in bels, not decibels. bel is ten decibels
 // #define PRINT_CEILING
 #define USE_SERIAL
 // #define PRINT_OUTPUT
-// #define PRINT_PEAKS
+//#define PRINT_PEAKS
 #define PRINT_FFT_TIME
 #define PRINT_ALL_TIME
 #define PRINT_FASTLED_TIME
@@ -172,7 +177,12 @@ const float dynamicRange = 5.0;    // in bels, not decibels. bel is ten decibels
 #define PRINT_SAMPLE_RATE
 #define PRINT_LESSER_SAMPLES
 #define PRINT_BUFFER_FULL
-
+#define BRIGHTNESS_PIN 36 // GPIO36 pin connected to pot. (10k~100k)
+#define buttonInput1    25 // GIOP25 pin connected to buttonInput1
+#define buttonInput2    26 // GIOP26 pin connected to buttonInput2
+#define buttonInput3    33 // GIOP33 pin connected to buttonInput3
+#define buttonInput4    32 // GIOP32 pin connected to buttonInput4
+#define NUMBER_OF_STATES 8 // Number of PATTERNS (0~7)
 // Kaiser windowing has the best reduction of side lobes and somewhat narrow main lobe. The other windows don't even hold a candle.
 
 int maxCurrent = 15000;
@@ -198,13 +208,22 @@ uint32_t loopMicros = 0;
 uint32_t loopCycles = 0;
 
 float deltaRatio = 0;
+float rainbowChunk = 0.4;  // Works in conjunction with rainbowChunkChanging & rainbowChunkSweeping 
+float rainbowChunkChanging = 0.038;
+float rainbowChunkSweeping = 0.01;
+float rainbowOffset = 0;
+//  rainbowDelta is a value that makes the rainbow change. it makes it faster or slower. 
+// .... if (NEG(-))--> LEFT to RIGHT direction. 
+// .... if (POS(+))<-- RIGHT to LEFT direction.
+float rainbowDelta_1 = -0.00028; // RAINBOW CHANGING
+float rainbowDelta_2 = -0.005;  // RAINBOW SWEEPING
 
 static uint16_t ledMappingFunction(uint16_t hardwareLed);
 #define __SOFTWARE_MAP
 #include "I2SClocklessLedDriver.h"
 I2SClocklessLedDriver driver;
 
-char BTname[] = "triumvirate";
+char BTname[] = "SPECTRUM";
 BluetoothA2DPSink a2dp_sink;
 
 OffsetDisplay offd;
@@ -261,7 +280,27 @@ float sqrtApprox(float number)
   y.u = 0x5F1FFFF9ul - (y.u >> 1);
   return number * 0.703952253f * y.f * (2.38924456f - number * y.f * y.f);
 }
-
+ 
+ //================= COLORS =====================
+// BLACK
+CRGB Peaks(float hue)
+{
+  CRGB color;
+  color.r = 0;
+  color.g = 0;
+  color.b = 0;
+  return color;
+}
+// BLUE
+CRGB Blue(float hue)
+{
+  CRGB color;
+  color.r = 0;
+  color.g = 0;
+  color.b = 255;
+  return color;
+}
+// RAINBOW
 CRGB redToBlue(float hue)
 {
   CRGB color;
@@ -270,40 +309,45 @@ CRGB redToBlue(float hue)
   color.b = std::max((float)255 * (hue * 2 - 1), (float)0) * 0.080 * 2.5;
   return color;
 }
-
-/*
-void mapLeds()
+// RAINBOW CHANGING
+CRGB rainbow(float hue)
 {
-  for (int i = 0; i < BANDS; i++)
+  CRGB color;
+  if (hue < 0)
   {
-    for (int j = 0; j < 16; j++)
-    {
-      if ((bands[i] * 16 - j) >= 0) leds[ledMap[i * 16 + j]] = templateLeds[i * 16 + j];
-      else if ((bands[i] * 16 - j) > -1)
-      {
-        leds[ledMap[i * 16 + j]].r = ((float)templateLeds[i * 16 + j].r + 1.0) * (bands[i] * 16.0 - j + 1.0);   // I add one to the color so that if it's small it doesn't disappear first. now if the color is one, it will disappear in the middle.
-        leds[ledMap[i * 16 + j]].g = ((float)templateLeds[i * 16 + j].g + 1.0) * (bands[i] * 16.0 - j + 1.0);
-        leds[ledMap[i * 16 + j]].b = ((float)templateLeds[i * 16 + j].b + 1.0) * (bands[i] * 16.0 - j + 1.0);
-      }
-      else leds[ledMap[i * 16 + j]] = {0, 0, 0};
-    }
+    color.r = 64;
+    color.g = 0;
+    color.b = 0;
   }
-}
-*/
-
-/*
-void mapLeds()
-{
-  for (int x = 0; x < SCREEN_WIDTH; x++)
+  else if (hue <= 1.0 / 3)
   {
-    for (int y = 0; y < SCREEN_HEIGHT; y++)
-    {
-        leds[x + y * SCREEN_WIDTH].r = 4;
-    }
+    color.r = 64 * (1 - hue * 3);
+    color.g = 64 * (hue * 3);
+    color.b = 0;
   }
+  else if (hue <= 2.0 / 3)
+  {
+    color.r = 0;
+    color.g = 64 * (1 - (hue - 1.0 / 3) * 3);
+    color.b = 64 * ((hue - 1.0 / 3) * 3);
+  }
+  else if (hue <= 1.0)
+  {
+    color.r = 64 * ((hue - 2.0 / 3) * 3);;
+    color.g = 0;
+    color.b = 64 * (1 - (hue - 2.0 / 3) * 3);
+  }
+  else
+  {
+    color.r = 64;
+    color.g = 0;
+    color.b = 0;
+  }
+  return color;
 }
-*/
+//=============== END COLORS ====================
 
+//=============== PATTERNS ======================
 void mapLeds_rainbow(float* bands)
 {
   for (int x = 0; x < BANDS; x++)
@@ -319,6 +363,120 @@ void mapLeds_rainbow(float* bands)
         leds[x + SCREEN_WIDTH * y].b = ((float)color.b + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y) + 0.999);
       }
       else leds[x + SCREEN_WIDTH * y] = {0, 0, 0};
+	}
+  }
+}
+
+void mapLeds_rainbow_upsidedown(float* bands)    
+{
+  for (int x = 0; x < BANDS; x++)
+  {
+    CRGB color = redToBlue(((float)x / (BANDS - 1)) * sqrtApprox((float)x / (BANDS - 1)));
+    for (int y = 0; y < SCREEN_HEIGHT; y++)
+    {
+      if ((bands[x] * SCREEN_HEIGHT - y) >= 0) leds[x + SCREEN_WIDTH * y] = color;
+      else if ((bands[x] * 24 - y) > -1)
+      {
+        leds[x + SCREEN_WIDTH * y].r = ((float)color.r + 0.999) * (bands[x] * SCREEN_HEIGHT - y + 0.999);
+        leds[x + SCREEN_WIDTH * y].g = ((float)color.g + 0.999) * (bands[x] * SCREEN_HEIGHT - y + 0.999);
+        leds[x + SCREEN_WIDTH * y].b = ((float)color.b + 0.999) * (bands[x] * SCREEN_HEIGHT - y + 0.999);
+      }
+      else leds[x + SCREEN_WIDTH * y] = {0, 0, 0};
+    }
+  }
+}
+
+void mapLeds_changing_rainbow(float* bands, float rainbowChunk, float rainbowOffset)
+{
+  for (int x = 0; x < BANDS; x++)
+  {
+	CRGB color = rainbow(fmodf((float)x / (float)BANDS * rainbowChunk * rainbowChunkChanging + rainbowOffset, 1));  
+    for (int y = 0; y < SCREEN_HEIGHT; y++)
+    {
+      if ((bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y)) >= 0) leds[x + SCREEN_WIDTH * y] = color;
+      else if ((bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y)) > -1)
+      {
+        leds[x + SCREEN_WIDTH * y].r = ((float)color.r + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y) + 0.999);
+        leds[x + SCREEN_WIDTH * y].g = ((float)color.g + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y) + 0.999);
+        leds[x + SCREEN_WIDTH * y].b = ((float)color.b + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y) + 0.999);
+      }
+      else leds[x + SCREEN_WIDTH * y] = {0, 0, 0};
+	}
+  }
+}
+
+void  mapLeds_sweeping_rainbow(float* bands, float rainbowChunk, float rainbowOffset)
+{
+  for (int x = 0; x < BANDS; x++)
+  {
+	CRGB color = rainbow(fmodf((float)x / (float)BANDS * rainbowChunk * rainbowChunkSweeping + rainbowOffset, 1));  
+    for (int y = 0; y < SCREEN_HEIGHT; y++)
+    {
+      if ((bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y)) >= 0) leds[x + SCREEN_WIDTH * y] = color;
+      else if ((bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y)) > -1)
+      {
+        leds[x + SCREEN_WIDTH * y].r = ((float)color.r + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y) + 0.999);
+        leds[x + SCREEN_WIDTH * y].g = ((float)color.g + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y) + 0.999);
+        leds[x + SCREEN_WIDTH * y].b = ((float)color.b + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y) + 0.999);
+      }
+      else leds[x + SCREEN_WIDTH * y] = {0, 0, 0};
+	}
+  }
+}
+
+void mapLeds_Blue(float* bands)
+{
+  for (int x = 0; x < BANDS; x++)
+  {
+    CRGB color = Blue(((float)x / (BANDS - 1)) * sqrtApprox((float)x / (BANDS - 1)));
+    for (int y = 0; y < SCREEN_HEIGHT; y++)
+    {
+      if ((bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y)) >= 0) leds[x + SCREEN_WIDTH * y] = color;
+      else if ((bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y)) > -1)
+      {
+        leds[x + SCREEN_WIDTH * y].r = ((float)color.r + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y) + 0.999);
+        leds[x + SCREEN_WIDTH * y].g = ((float)color.r + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y) + 0.999);
+        leds[x + SCREEN_WIDTH * y].b = ((float)color.r + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y) + 0.999);
+      }
+      else leds[x + SCREEN_WIDTH * y] = {0, 0, 0};
+    }
+  }
+}
+
+void mapLeds_Blue_upsidedown(float* bands) 
+{
+  for (int x = 0; x < BANDS; x++)
+  {
+    CRGB color = Blue(((float)x / (BANDS - 1)) * sqrtApprox((float)x / (BANDS - 1)));
+    for (int y = 0; y < SCREEN_HEIGHT; y++)
+    {
+      if ((bands[x] * SCREEN_HEIGHT - y) >= 0) leds[x + SCREEN_WIDTH * y] = color;
+      else if ((bands[x] * 24 - y) > -1)
+      {
+        leds[x + SCREEN_WIDTH * y].r = ((float)color.r + 0.999) * (bands[x] * SCREEN_HEIGHT - y + 0.999);
+        leds[x + SCREEN_WIDTH * y].g = ((float)color.g + 0.999) * (bands[x] * SCREEN_HEIGHT - y + 0.999);
+        leds[x + SCREEN_WIDTH * y].b = ((float)color.b + 0.999) * (bands[x] * SCREEN_HEIGHT - y + 0.999);
+      }
+      else leds[x + SCREEN_WIDTH * y] = {0, 0, 0};
+    }
+  }
+}
+
+void mapLeds_peaks(float* bands)
+{
+  for (int x = 0; x < BANDS; x++)
+  {
+    CRGB color = Peaks(((float)x / (BANDS - 1)) * sqrtApprox((float)x / (BANDS - 1)));
+    for (int y = 0; y < SCREEN_HEIGHT; y++)
+    {
+      if ((bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y)) >= 0) leds[x + SCREEN_WIDTH * y] = color;
+      else if ((bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT - 1 - y)) > -1)
+      {
+        leds[x + SCREEN_WIDTH * y].r = ((float)color.r + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT%2 - 1 - y) + 0.999);
+        leds[x + SCREEN_WIDTH * y].g = ((float)color.r + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT%2 - 1 - y) + 0.999);
+        leds[x + SCREEN_WIDTH * y].b = ((float)color.r + 0.999) * (bands[x] * SCREEN_HEIGHT - (SCREEN_HEIGHT%2 - 1 - y) + 0.999);
+      }
+      else leds[x + SCREEN_WIDTH * y] = {0, 0, 0};
     }
   }
 }
@@ -330,8 +488,8 @@ __attribute__((always_inline)) void mapLeds_textures(int x, FloatOffset groundOf
     {
       CRGB groundColor = ((CRGB*)yellow_sand)[((y + (int)groundOffset.y) % TILE_HEIGHT) * TILE_WIDTH + (x + (int)groundOffset.x) % TILE_WIDTH];
       groundColor.r = groundColor.r / 4;
-      groundColor.g = groundColor.g / 64;
-      groundColor.b = groundColor.b / 64;
+      groundColor.g = groundColor.g / 32;
+      groundColor.b = groundColor.b / 32;
       CRGB skyColor = ((CRGB*)dark_blue_water)[((y + (int)skyOffset.y) % TILE_HEIGHT) * TILE_WIDTH + (x + (int)skyOffset.x) % TILE_WIDTH];
       skyColor.r = skyColor.r / 64;
       skyColor.g = skyColor.g / 64;
@@ -362,8 +520,7 @@ __attribute__((always_inline)) void mapLeds_textures(int x, FloatOffset groundOf
 
 void drawCharacter(const CRGB* character, float startingColumn, float offSet, float columnsPerFrame, int numberOfFrames, int frameWidth, int frameHeight)
 {
-  // int frame = (int)((startingColumn + offSet) / columnsPerFrame) % numberOfFrames;
-  int frame = (int)((startingColumn + offSet) / columnsPerFrame) % numberOfFrames;
+   int frame = (int)((startingColumn + offSet) / columnsPerFrame) % numberOfFrames;
   // frame = 0;
   for (int x = (int)(startingColumn + 100) - 100; x < (int)startingColumn + frameWidth; x++)
   {
@@ -384,29 +541,6 @@ void drawCharacter(const CRGB* character, float startingColumn, float offSet, fl
   }
   
 }
-
-
-
-/*
-void mapLeds()     // upside down
-{
-  for (int x = 0; x < BANDS; x++)
-  {
-    CRGB color = redToBlue(((float)x / (BANDS - 1)) * sqrtApprox((float)x / (BANDS - 1)));
-    for (int y = 0; y < SCREEN_HEIGHT; y++)
-    {
-      if ((bands[x] * SCREEN_HEIGHT - y) >= 0) leds[x + SCREEN_WIDTH * y] = color;
-      else if ((bands[x] * 32 - y) > -1)
-      {
-        leds[x + SCREEN_WIDTH * y].r = ((float)color.r + 0.999) * (bands[x] * SCREEN_HEIGHT - y + 0.999);
-        leds[x + SCREEN_WIDTH * y].g = ((float)color.g + 0.999) * (bands[x] * SCREEN_HEIGHT - y + 0.999);
-        leds[x + SCREEN_WIDTH * y].b = ((float)color.b + 0.999) * (bands[x] * SCREEN_HEIGHT - y + 0.999);
-      }
-      else leds[x + SCREEN_WIDTH * y] = {0, 0, 0};
-    }
-  }
-}
-*/
 
 void substractAverage(float* inputReal)
 {
@@ -463,6 +597,12 @@ void startAudio()
     .bits_per_sample = (i2s_bits_per_sample_t)16,
     .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
     .communication_format = (i2s_comm_format_t) (I2S_COMM_FORMAT_STAND_I2S),
+//=============== OTHER COMMUNICATION FORMATS =============================	
+//  .communication_format = (i2s_comm_format_t) (I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
+//  .communication_format = (i2s_comm_format_t) (I2S_COMM_FORMAT_I2S_MSB),
+//  .communication_format = (i2s_comm_format_t) (I2S_COMM_FORMAT_I2S_PCM),
+//  .communication_format = (i2s_comm_format_t) (I2S_COMM_FORMAT_STAND_MSB),
+//  .communication_format = (i2s_comm_format_t) (I2S_COMM_FORMAT_STAND_PCM),
     .intr_alloc_flags = 0, // default interrupt priority
     .dma_buf_count = 8,
     .dma_buf_len = 64,
@@ -702,11 +842,89 @@ float __attribute__ ((noinline)) findDeltaRatio(int32_t maxDepth, float low, flo
     }
 }
 
+ bool charactersOn = false;
+ 
+ //================##### BRIGHTNESS-(1) #####=======================
+ uint8_t brightness = 255;
+ float brightnessFloat = 0;
+ //================#### BUTTON STUFF-(1) ####=======================
+ DualFunctionButton button1(buttonInput1, 1000, INPUT_PULLUP);
+ DualFunctionButton button2(buttonInput2, 1000, INPUT_PULLUP);
+ DualFunctionButton button3(buttonInput3, 1000, INPUT_PULLUP);
+ DualFunctionButton button4(buttonInput4, 1000, INPUT_PULLUP); 
+ uint32_t buttonPushCounter = UINT32_MAX / 2;  // counter for the number of button presses
+ int currentATX = HIGH;
+ //==============#### END BUTTON STUFF-(1) ####=========
+
+ //======================<<<< DEMO_1 >>>>===============================
+ // We are using hardware timer in ESP32. The timer calls onTimer function every (10) seconds.
+ //  The timer can be stopped with BUTTON_PIN1 attached to PIN 26 (GIOP26)
+  hw_timer_t * timer = NULL;   //H/W timer defining (Pointer to the Structure)
+  portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+//Defining Inerrupt function with IRAM_ATTR for faster access
+void IRAM_ATTR onTimer(){
+  // Increment the counter and set the time of ISR
+  portENTER_CRITICAL_ISR(&timerMux);
+ // charactersOn ^= true;
+  buttonPushCounter++; // function that uses timer
+  portEXIT_CRITICAL_ISR(&timerMux); 
+}
+ 
+
+ void autoOn() 
+{
+ // Initilise the timer.
+  // Parameter 1 is the timer we want to use. Valid: 0, 1, 2, 3 (total 4 timers)
+  // Parameter 2 is the prescaler. The ESP32 default clock is at 80MhZ. The value "80" will
+  // divide the clock by 80, giving us 1,000,000 ticks per second.
+  // Parameter 3 is true means this counter will count up, instead of down (false).
+  timer = timerBegin(0, 80, true);  
+  
+  // Attach the timer to the interrupt service routine named "onTimer".
+  // The 3rd parameter is set to "true" to indicate that we want to use the "edge" type (instead of "flat").
+  timerAttachInterrupt(timer, &onTimer, true);
+  
+  // This is where we indicate the frequency of the interrupts.
+  // The value "1000000" (because of the prescaler we set in timerBegin) will produce
+  // one interrupt every second.
+  // The 3rd parameter is true so that the counter reloads when it fires an interrupt, and so we
+  // can get periodic interrupts (instead of a single interrupt). 
+  timerAlarmWrite(timer, 10000000, true);  // 10000000 is 10sec
+  timerAlarmEnable(timer);   // Enable Timer with interrupt.
+}
+//=====================>>>> END DEMO_1 <<<<============================
+
+void autoOff()
+{
+	 //=============== (DEMO STOP) ======================================	
+	  // If timer is still running
+      if (timer) {
+      // Stop and free timer
+         timerEnd(timer);
+         timer = NULL;
+	}
+ //================================================================== 	
+}
 void setup()
 {
-  #ifdef USE_SERIAL
+  delay( 1000 ); // power-up safety delay
+ #ifdef BISCUIT
+  pinMode(LED1,OUTPUT);
+ #endif
+ #ifdef USE_SERIAL
   Serial.begin(115200);
   #endif
+  //==============#### BUTTON STUFF-(2) ####============== 
+  // initialize the pushbutton pin as a pull-up input
+  // the pull-up input pin will be HIGH when the switch is open and LOW when the switch is closed.
+  pinMode(buttonInput1, INPUT_PULLUP);
+  pinMode(buttonInput2, INPUT_PULLUP);
+  pinMode(buttonInput3, INPUT_PULLUP);
+  pinMode(buttonInput4, INPUT_PULLUP);
+  //===========#### END BUTTON STUFF-(2) ####=============
+  pinMode(BRIGHTNESS_PIN, INPUT);
+
+  
   programMode = bluetooth;
   Serial.printf("programMode = %d\n\r", programMode);
   Serial.println("Just booted up");
@@ -774,6 +992,10 @@ void setup()
   
   Serial.printf("ledMappingFunction(0) = %d\n\r", ledMappingFunction(0));
   Serial.printf("ledMappingFunction(1790) = %d\n\r", ledMappingFunction(1790));
+  
+ //====================<<<< DEMO_2 >>>>==============================
+  autoOn();
+ //==================>>>> END DEMO_2 <<<<============================
 }
 
 void loopBluetooth()
@@ -789,7 +1011,9 @@ void loopBluetooth()
   static float* peakBands;
   #endif
   
-  bool charactersOn = false;
+  //bool state;
+  //bool charactersOn = false;
+ 
   static unsigned int beebBoob = 178;
   static uint32_t previousMicros = 0;
   static uint32_t previousCycles = 0;
@@ -862,7 +1086,7 @@ void loopBluetooth()
   
   #ifdef PRINT_RAM
   // I had to move these commands here because they bothered I2SCloclessLedDriver
-  // They do something that blocks the interruots or something
+  // They do something that blocks the interrupts or something
   // I was getting pretty garbled results just because of this
   // I had to wait until I2SCloclessLedDriver was done drawing the leds
   static int heap_caps_get_largest_free_block_8bit_min = 1000000000;
@@ -879,21 +1103,88 @@ void loopBluetooth()
   // mapLeds();
   // mapLeds_mario();
   // driver.ledToDisplay will be needed next
-  switch (mapMode)
+
+ //============##### BRIGHTNESS-(2) #####============================
+ // brightnessFloat = 0.99 * brightnessFloat + 0.01 * analogRead(BRIGHTNESS_PIN) / 4095 * 255;
+  int analogValue = analogRead(BRIGHTNESS_PIN);
+  brightnessFloat = map(analogValue, 0, 4095, 0, 255);
+  brightness = brightnessFloat;
+  driver.setBrightness(brightness);
+ //============#### BUTTON STUFF-(3) ####============================  
+ //================ BUTTON (1) ======================================
+  if (button1.shortPress()) 
   {
-    case TEXTURES:
-    for (int x = 0; x < BANDS; x++)
-    {
-      mapLeds_textures(x, groundOffset, skyOffset, bands);
-    }
-    break;
-    
-    case RAINBOW:
-    mapLeds_rainbow(bands);
-    break;
+    autoOff();
+    buttonPushCounter++; // PATTERNS changing up
   }
-  
-  if (charactersOn == true)
+  if (button1.longPress()) 
+  {
+    autoOff();
+    buttonPushCounter--; // PATTERNS changing down
+  }  
+ //================ BUTTON (2) ======================================
+  if (button2.shortPress()) 
+  {
+    autoOff();
+    buttonPushCounter--; // PATTERNS changing down
+  }
+  if (button2.longPress()) 
+  {
+    autoOff();
+    buttonPushCounter++; // PATTERNS changing up
+  }  
+ //==========#### END BUTTON STUFF-(3) ####==========================   
+
+ //=========\\\\\ PATTERNS \\\\\=====================================
+  switch (buttonPushCounter % NUMBER_OF_STATES)
+  {
+    case 0:  // WHITE PEAKS ONLY
+      mapLeds_peaks(bands);  
+      //  charactersOn ^= true;
+      break;   
+	
+	case 1:  // RAINBOW NORMAL
+      mapLeds_rainbow(bands);
+      break;
+      //	charactersOn ^= true;
+ 
+    case 2:  // RAINBOW CHANGING
+      rainbowOffset = fmodf(rainbowOffset + rainbowDelta_1, 1) + 1;
+      mapLeds_changing_rainbow(bands, rainbowChunk, rainbowOffset);
+      //  charactersOn ^= true;
+      break;
+	  
+    case 3:  // RAINBOW SWEEPING
+      rainbowOffset = fmodf(rainbowOffset + rainbowDelta_2, 1) + 1;
+      mapLeds_sweeping_rainbow(bands, rainbowChunk, rainbowOffset);
+      //  charactersOn ^= true;
+      break;
+	
+    case 4:  // TEXTURES
+      for (int x = 0; x < BANDS; x++)
+      {
+        mapLeds_textures(x, groundOffset, skyOffset, bands);
+      }
+      //	charactersOn ^= true;  
+      break;
+      
+    case 5:  // BLUE
+      mapLeds_Blue(bands);
+      //	charactersOn ^= true;
+      break;
+      
+	case 6:  // BLUE UPSIDEDOWN
+	  mapLeds_Blue_upsidedown(bands);
+      //	charactersOn ^= true;
+      break; 
+	  
+    case 7:  // RAINBOW UPSIDEDOWN
+	  mapLeds_rainbow_upsidedown(bands);	
+      //	charactersOn ^= true;
+      break; 
+  }  
+ //=========///// END PATTERNS  /////================================
+  if (charactersOn == true)  
   {
     // drawCharacter(CRGB* character, float startingColumn, float offset, int columnsPerFrame, int numberOfFrames, int frameWidth, int frameHeight)
     static uint32_t characterNumber = 0;
@@ -916,8 +1207,8 @@ void loopBluetooth()
         frameHeight = 32;
         numberOfFrames = 8;
       }
-      // offset = 100.4 + (float)esp_random() / 1000000.4;
-      offset = 100.4 + ((double)esp_random() / (double)4194304);
+      offset = 100.4 + (float)esp_random() / 1000000.4;
+      //offset = 100.4 + ((double)esp_random() / (double)4194304);
       if ((characterNumber % 2) == 0)
       {
         columnsPerFrame = 1.5;
@@ -942,7 +1233,10 @@ void loopBluetooth()
         numberOfFrames = 6;
         columnsPerFrame = 2;
       }
-      startingColumn = 0 - frameWidth - 4;
+	   // startingColumn = 0 - frameWidth - 4 - (esp_random() / 2097152);
+       randomSeed(millis());
+       startingColumn = 0 - frameWidth - 4 - random(100, 1000);	  // time passed between characters showing
+      
       // Serial.printf("Color of the first pixel is %u\n\r", (*(uint32_t*)&(currentCharacter[0])));
       // it should be 16711164;
       // it's actually 4277992958 because the cpu is little endian
@@ -1065,16 +1359,36 @@ void loopArtnet()
 
 void loop()
 {
-  switch(programMode)
+ #ifdef BISCUIT
+ //  Internal LED1 is HIGH-(ON) when ATX is LOW-(GND)
+ //  digitalWrite(LED1,HIGH); 
+ currentATX = digitalRead(ATX_POWER_ON);
+ if (currentATX == LOW) 
+     digitalWrite(LED1,HIGH);
+  else digitalWrite(LED1,LOW);   
+ #endif     
+   loopBluetooth();  // This is the Loop where the magic happens.
+ 
+  //==========####BUTTON STUFF-(4)####=============================
+  //============= BUTTON (3) ======================================
+  if (button3.shortPress()) 
   {
-    case bluetooth:
-      while(true) loopBluetooth();
-      break;
-    case microphone:
-      while(true) loopMicrophone();
-      break;
-    case artnet:
-      while(true) loopArtnet();
-      break;
+   charactersOn ^= true;  //"The button is pressed" Characters On
   }
+  if (button3.longPress()) 
+  {
+   charactersOn ^= false; //"The button is released" Characters Off
+  }  
+
+ //============= BUTTON (4) ======================================
+  if (button4.shortPress()) 
+  {
+    autoOn();    //Demo on
+  }
+  if (button4.longPress()) 
+  {
+    autoOff();   //Demo off
+  }  
+//========#### END BUTTON STUFF-(4)####========================== 
+  
 }
